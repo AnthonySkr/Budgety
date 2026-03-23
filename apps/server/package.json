@@ -1,33 +1,33 @@
 {
-  "name": "@budgety/server",
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/index.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "better-sqlite3": "^11.10.0",
-    "cors": "^2.8.5",
-    "express": "^5.1.0",
-    "helmet": "^8.1.0"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
-    "@types/cors": "^2.8.17",
-    "@types/express": "^5.0.3",
-    "@types/node": "^24.12.0",
-    "@types/supertest": "^6.0.2",
-    "@vitest/coverage-v8": "^3.2.4",
-    "supertest": "^7.1.0",
-    "tsx": "^4.19.4",
-    "typescript": "~5.9.3",
-    "vitest": "^3.2.4"
-  }
+    "name": "@budgety/server",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "tsx watch src/index.ts",
+        "build": "tsc -p tsconfig.build.json",
+        "start": "node dist/index.js",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "better-sqlite3": "^12.8.0",
+        "cors": "^2.8.6",
+        "express": "^5.2.1",
+        "helmet": "^8.1.0"
+    },
+    "devDependencies": {
+        "@types/better-sqlite3": "^7.6.13",
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.6",
+        "@types/node": "^25.5.0",
+        "@types/supertest": "^7.2.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "supertest": "^7.2.2",
+        "tsx": "^4.21.0",
+        "typescript": "~5.9.3",
+        "vitest": "^4.1.0"
+    }
 }
