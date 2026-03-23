@@ -62,6 +62,7 @@ interface RowBase {
 const transactionTypes = new Set<TransactionType>(['expense', 'income'])
 const frequencies = new Set<Frequency>(['monthly', 'yearly'])
 const budgetPeriods = new Set<BudgetPeriod>(['monthly', 'yearly'])
+const allowedTables = new Set(['accounts', 'categories', 'transactions', 'loans', 'budgets'])
 
 export const router: IRouter = Router()
 
@@ -257,6 +258,10 @@ function mapBudget(row: {
 }
 
 function rowExists(table: string, id: number): boolean {
+    if (!allowedTables.has(table)) {
+        throw new Error('Invalid table')
+    }
+
     const db = getDb()
     const row = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id) as RowBase | undefined
     return Boolean(row)
@@ -718,7 +723,7 @@ router.post('/transfers', (req, res) => {
         }
 
         if (!rowExists('accounts', fromAccountId) || !rowExists('accounts', toAccountId)) {
-            return res.status(400).json({ error: 'One account does not exist' })
+            return res.status(400).json({ error: 'One or both accounts do not exist' })
         }
 
         const insert = db.prepare(
@@ -1284,6 +1289,9 @@ router.post('/import/json', (req, res) => {
         db.exec('BEGIN')
 
         for (const table of tables) {
+            if (!allowedTables.has(table)) {
+                throw new Error('Invalid table')
+            }
             db.prepare(`DELETE FROM ${table}`).run()
         }
 

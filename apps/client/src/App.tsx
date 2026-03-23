@@ -531,7 +531,7 @@ function App() {
                                 }))
                             }
                         >
-                            <option value="">Aucune parent</option>
+                            <option value="">Aucun parent</option>
                             {categoryOptions.map((option) => (
                                 <option key={option.value} value={option.value}>
                                     {option.label}
