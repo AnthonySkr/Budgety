@@ -155,6 +155,10 @@ function getQueryNumber(value: unknown, key: string): number | null {
     return parsed
 }
 
+function isIsoDate(value: string): boolean {
+    return /^\d{4}-\d{2}-\d{2}$/u.test(value)
+}
+
 function assertType(value: string): TransactionType {
     if (!transactionTypes.has(value as TransactionType)) {
         throw new Error('Invalid field: type')
@@ -1238,6 +1242,13 @@ router.get('/stats', (req, res) => {
         const accountId = getQueryNumber(req.query['accountId'], 'accountId')
         const categoryId = getQueryNumber(req.query['categoryId'], 'categoryId')
 
+        if (startDate !== null && !isIsoDate(startDate)) {
+            throw new Error('Invalid query parameter: startDate')
+        }
+        if (endDate !== null && !isIsoDate(endDate)) {
+            throw new Error('Invalid query parameter: endDate')
+        }
+
         const transactionFilters: string[] = []
         const transactionFilterParams: Array<string | number> = []
 
@@ -1414,10 +1425,7 @@ router.post('/import/csv', (req, res) => {
             throw new Error('CSV content is empty')
         }
 
-        const headerRow = rows[0]
-        if (headerRow === undefined) {
-            throw new Error('CSV content is empty')
-        }
+        const headerRow = rows[0] as string[]
         const headers = headerRow.map((header) => header.trim().toLowerCase())
         const dataRows = rows.slice(1)
         const headerIndex = new Map(headers.map((header, index) => [header, index]))
@@ -1466,7 +1474,16 @@ router.post('/import/csv', (req, res) => {
             const amountRaw = row[amountIndex]
             const date = row[dateIndex]?.trim() ?? ''
             const description = row[descriptionIndex]?.trim() ?? ''
-            const parsedAmount = Number((amountRaw ?? '').replace(',', '.'))
+            const normalizedAmount = (amountRaw ?? '').trim().replace(/\s/gu, '')
+            const hasComma = normalizedAmount.includes(',')
+            const hasDot = normalizedAmount.includes('.')
+            let amountValue = normalizedAmount
+            if (hasComma && hasDot) {
+                amountValue = normalizedAmount.replace(/\./gu, '').replace(',', '.')
+            } else if (hasComma) {
+                amountValue = normalizedAmount.replace(',', '.')
+            }
+            const parsedAmount = Number(amountValue)
             if (!Number.isFinite(parsedAmount) || date.length === 0 || description.length === 0) {
                 continue
             }

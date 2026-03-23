@@ -1279,12 +1279,13 @@ function App() {
                             <option value="income">Type par défaut: income</option>
                         </select>
                         <input
+                            aria-label="Délimiteur CSV"
                             value={csvImportForm.delimiter}
                             maxLength={1}
                             onChange={(event) =>
                                 setCsvImportForm((current) => ({
                                     ...current,
-                                    delimiter: event.target.value || ',',
+                                    delimiter: event.target.value,
                                 }))
                             }
                         />
