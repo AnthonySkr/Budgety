@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 
 type TransactionType = 'expense' | 'income'
@@ -75,6 +75,13 @@ interface StatsData {
     }>
 }
 
+interface StatsFilters {
+    startDate: string
+    endDate: string
+    accountId: string
+    categoryId: string
+}
+
 const env = import.meta.env as ImportMetaEnv & { VITE_API_URL?: string }
 const API_BASE = env.VITE_API_URL ?? 'http://localhost:3000/api'
 
@@ -108,6 +115,18 @@ function App() {
     const [dashboard, setDashboard] = useState<DashboardData | null>(null)
     const [stats, setStats] = useState<StatsData | null>(null)
     const [jsonBackup, setJsonBackup] = useState('')
+    const [statsFilters, setStatsFilters] = useState<StatsFilters>({
+        startDate: '',
+        endDate: '',
+        accountId: '',
+        categoryId: '',
+    })
+    const [csvImportForm, setCsvImportForm] = useState({
+        accountId: '',
+        defaultType: 'expense',
+        delimiter: ',',
+        csv: '',
+    })
 
     const [accountForm, setAccountForm] = useState({
         name: '',
@@ -162,8 +181,43 @@ function App() {
         () => accounts.map((account) => ({ value: String(account.id), label: account.name })),
         [accounts],
     )
+    const maxCategoryTotal = useMemo(
+        () => Math.max(...(stats?.byCategory.map((item) => item.total) ?? [0]), 0),
+        [stats],
+    )
+    const maxMonthlyValue = useMemo(
+        () =>
+            Math.max(...(stats?.byMonth.flatMap((item) => [item.income, item.expense]) ?? [0]), 0),
+        [stats],
+    )
+    const maxBudgetValue = useMemo(
+        () =>
+            Math.max(
+                ...(stats?.budgetUsage.flatMap((item) => [item.amount, item.spent]) ?? [0]),
+                0,
+            ),
+        [stats],
+    )
 
-    async function refreshAll(): Promise<void> {
+    function buildStatsQuery(filters: StatsFilters): string {
+        const params = new URLSearchParams()
+        if (filters.startDate) {
+            params.set('startDate', filters.startDate)
+        }
+        if (filters.endDate) {
+            params.set('endDate', filters.endDate)
+        }
+        if (filters.accountId) {
+            params.set('accountId', filters.accountId)
+        }
+        if (filters.categoryId) {
+            params.set('categoryId', filters.categoryId)
+        }
+        const query = params.toString()
+        return query ? `?${query}` : ''
+    }
+
+    const refreshAll = useCallback(async (): Promise<void> => {
         setError(null)
         try {
             const [
@@ -181,7 +235,7 @@ function App() {
                 request<Loan[]>('/loans'),
                 request<Budget[]>('/budgets'),
                 request<DashboardData>('/dashboard'),
-                request<StatsData>('/stats'),
+                request<StatsData>(`/stats${buildStatsQuery(statsFilters)}`),
             ])
 
             setAccounts(accountsData)
@@ -194,7 +248,7 @@ function App() {
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unknown error')
         }
-    }
+    }, [statsFilters])
 
     useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -204,7 +258,7 @@ function App() {
         return () => {
             window.clearTimeout(timer)
         }
-    }, [])
+    }, [refreshAll])
 
     async function handleLogin(event: FormEvent<HTMLFormElement>): Promise<void> {
         event.preventDefault()
@@ -349,6 +403,27 @@ function App() {
             method: 'POST',
             body: jsonBackup,
         })
+        await refreshAll()
+    }
+
+    async function importCsv(): Promise<void> {
+        await request<{ imported: number }>('/import/csv', {
+            method: 'POST',
+            body: JSON.stringify({
+                csv: csvImportForm.csv,
+                accountId: Number(csvImportForm.accountId),
+                delimiter: csvImportForm.delimiter,
+                defaultType: csvImportForm.defaultType,
+                mapping: {
+                    date: 'date',
+                    description: 'description',
+                    amount: 'amount',
+                    category: 'category',
+                    type: 'type',
+                },
+            }),
+        })
+        setCsvImportForm((current) => ({ ...current, csv: '' }))
         await refreshAll()
     }
 
@@ -971,6 +1046,152 @@ function App() {
             {activeTab === 'stats' && stats && (
                 <section className="card" aria-label="stats">
                     <h2>Statistiques</h2>
+                    <div className="form-grid stats-filters">
+                        <input
+                            type="date"
+                            value={statsFilters.startDate}
+                            onChange={(event) =>
+                                setStatsFilters((current) => ({
+                                    ...current,
+                                    startDate: event.target.value,
+                                }))
+                            }
+                        />
+                        <input
+                            type="date"
+                            value={statsFilters.endDate}
+                            onChange={(event) =>
+                                setStatsFilters((current) => ({
+                                    ...current,
+                                    endDate: event.target.value,
+                                }))
+                            }
+                        />
+                        <select
+                            value={statsFilters.accountId}
+                            onChange={(event) =>
+                                setStatsFilters((current) => ({
+                                    ...current,
+                                    accountId: event.target.value,
+                                }))
+                            }
+                        >
+                            <option value="">Tous les comptes</option>
+                            {accountOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </select>
+                        <select
+                            value={statsFilters.categoryId}
+                            onChange={(event) =>
+                                setStatsFilters((current) => ({
+                                    ...current,
+                                    categoryId: event.target.value,
+                                }))
+                            }
+                        >
+                            <option value="">Toutes les catégories</option>
+                            {categoryOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </select>
+                        <button type="button" onClick={() => void refreshAll()}>
+                            Appliquer filtres
+                        </button>
+                    </div>
+
+                    <h3>Graphiques</h3>
+                    <div className="chart-grid">
+                        <article className="chart-card">
+                            <h4>Répartition par catégorie</h4>
+                            <div className="chart-bars">
+                                {stats.byCategory.slice(0, 8).map((item) => (
+                                    <div
+                                        className="chart-row"
+                                        key={`${item.category}-${item.type}`}
+                                    >
+                                        <span>
+                                            {item.category} ({item.type})
+                                        </span>
+                                        <div className="bar-track">
+                                            <div
+                                                className="bar-fill"
+                                                style={{
+                                                    width: `${maxCategoryTotal === 0 ? 0 : (item.total / maxCategoryTotal) * 100}%`,
+                                                }}
+                                            />
+                                        </div>
+                                        <strong>{item.total.toFixed(2)} €</strong>
+                                    </div>
+                                ))}
+                            </div>
+                        </article>
+
+                        <article className="chart-card">
+                            <h4>Évolution mensuelle</h4>
+                            <div className="chart-bars">
+                                {stats.byMonth.map((item) => (
+                                    <div className="chart-row chart-row-multi" key={item.month}>
+                                        <span>{item.month}</span>
+                                        <div className="bar-track">
+                                            <div
+                                                className="bar-fill income"
+                                                style={{
+                                                    width: `${maxMonthlyValue === 0 ? 0 : (item.income / maxMonthlyValue) * 100}%`,
+                                                }}
+                                            />
+                                            <div
+                                                className="bar-fill expense"
+                                                style={{
+                                                    width: `${maxMonthlyValue === 0 ? 0 : (item.expense / maxMonthlyValue) * 100}%`,
+                                                }}
+                                            />
+                                        </div>
+                                        <strong>
+                                            +{item.income.toFixed(0)} / -{item.expense.toFixed(0)}
+                                        </strong>
+                                    </div>
+                                ))}
+                            </div>
+                        </article>
+
+                        <article className="chart-card">
+                            <h4>Budgets vs dépenses</h4>
+                            <div className="chart-bars">
+                                {stats.budgetUsage.map((item) => {
+                                    const usagePercent =
+                                        item.amount > 0 ? (item.spent / item.amount) * 100 : 0
+                                    const usageClass =
+                                        usagePercent >= 100
+                                            ? 'critical'
+                                            : usagePercent >= 80
+                                              ? 'warning'
+                                              : 'ok'
+                                    return (
+                                        <div className="chart-row" key={item.id}>
+                                            <span>{item.name}</span>
+                                            <div className="bar-track">
+                                                <div
+                                                    className={`bar-fill budget ${usageClass}`}
+                                                    style={{
+                                                        width: `${maxBudgetValue === 0 ? 0 : (Math.min(item.spent, item.amount) / maxBudgetValue) * 100}%`,
+                                                    }}
+                                                />
+                                            </div>
+                                            <strong>
+                                                {item.spent.toFixed(0)} / {item.amount.toFixed(0)} €
+                                            </strong>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        </article>
+                    </div>
+
                     <h3>Par catégorie</h3>
                     <ul>
                         {stats.byCategory.map((item) => (
@@ -1019,6 +1240,68 @@ function App() {
                         value={jsonBackup}
                         onChange={(event) => setJsonBackup(event.target.value)}
                     />
+
+                    <h2>Import CSV</h2>
+                    <form
+                        className="form-grid"
+                        onSubmit={(event) => {
+                            event.preventDefault()
+                            void importCsv()
+                        }}
+                    >
+                        <select
+                            required
+                            value={csvImportForm.accountId}
+                            onChange={(event) =>
+                                setCsvImportForm((current) => ({
+                                    ...current,
+                                    accountId: event.target.value,
+                                }))
+                            }
+                        >
+                            <option value="">Compte cible</option>
+                            {accountOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </select>
+                        <select
+                            value={csvImportForm.defaultType}
+                            onChange={(event) =>
+                                setCsvImportForm((current) => ({
+                                    ...current,
+                                    defaultType: event.target.value as TransactionType,
+                                }))
+                            }
+                        >
+                            <option value="expense">Type par défaut: expense</option>
+                            <option value="income">Type par défaut: income</option>
+                        </select>
+                        <input
+                            value={csvImportForm.delimiter}
+                            maxLength={1}
+                            onChange={(event) =>
+                                setCsvImportForm((current) => ({
+                                    ...current,
+                                    delimiter: event.target.value || ',',
+                                }))
+                            }
+                        />
+                        <button type="submit">Importer CSV</button>
+                        <textarea
+                            required
+                            rows={10}
+                            placeholder="date,description,amount,type,category"
+                            value={csvImportForm.csv}
+                            onChange={(event) =>
+                                setCsvImportForm((current) => ({
+                                    ...current,
+                                    csv: event.target.value,
+                                }))
+                            }
+                        />
+                    </form>
                 </section>
             )}
         </main>

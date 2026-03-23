@@ -45,9 +45,19 @@ describe('App', () => {
             return Promise.resolve(
                 new Response(
                     JSON.stringify({
-                        byCategory: [],
-                        byMonth: [],
-                        budgetUsage: [],
+                        byCategory: [{ category: 'Courses', type: 'expense', total: 100 }],
+                        byMonth: [{ month: '2026-03', income: 2000, expense: 500 }],
+                        budgetUsage: [
+                            {
+                                id: 1,
+                                name: 'Budget Courses',
+                                amount: 400,
+                                spent: 200,
+                                remaining: 200,
+                                startDate: '2026-03-01',
+                                endDate: '2026-03-31',
+                            },
+                        ],
                     }),
                     { status: 200 },
                 ),
@@ -76,5 +86,16 @@ describe('App', () => {
         render(<App />)
         await user.click(screen.getByRole('button', { name: /se connecter/i }))
         expect(await screen.findByText(/connecté/i)).toBeInTheDocument()
+    })
+
+    it('renders stats charts section and csv import actions', async () => {
+        const user = userEvent.setup()
+        render(<App />)
+        await user.click(await screen.findByRole('button', { name: /stats/i }))
+        expect(await screen.findByRole('heading', { name: /graphiques/i })).toBeInTheDocument()
+        expect(screen.getByText(/répartition par catégorie/i)).toBeInTheDocument()
+
+        await user.click(screen.getByRole('button', { name: /backup/i }))
+        expect(await screen.findByRole('button', { name: /importer csv/i })).toBeInTheDocument()
     })
 })

@@ -132,6 +132,29 @@ function parseId(rawId: string): number {
     return id
 }
 
+function getQueryString(value: unknown): string | null {
+    if (typeof value !== 'string') {
+        return null
+    }
+
+    const trimmed = value.trim()
+    return trimmed.length === 0 ? null : trimmed
+}
+
+function getQueryNumber(value: unknown, key: string): number | null {
+    const raw = getQueryString(value)
+    if (raw === null) {
+        return null
+    }
+
+    const parsed = Number(raw)
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(`Invalid query parameter: ${key}`)
+    }
+
+    return parsed
+}
+
 function assertType(value: string): TransactionType {
     if (!transactionTypes.has(value as TransactionType)) {
         throw new Error('Invalid field: type')
@@ -157,6 +180,47 @@ function assertBudgetPeriod(value: string | null): BudgetPeriod | null {
         throw new Error('Invalid field: period')
     }
     return value as BudgetPeriod
+}
+
+function parseCsvLine(line: string, delimiter: string): string[] {
+    const values: string[] = []
+    let current = ''
+    let inQuotes = false
+
+    for (let index = 0; index < line.length; index += 1) {
+        const char = line[index]
+
+        if (char === '"') {
+            const nextChar = line[index + 1]
+            if (inQuotes && nextChar === '"') {
+                current += '"'
+                index += 1
+                continue
+            }
+
+            inQuotes = !inQuotes
+            continue
+        }
+
+        if (char === delimiter && !inQuotes) {
+            values.push(current.trim())
+            current = ''
+            continue
+        }
+
+        current += char
+    }
+
+    values.push(current.trim())
+    return values
+}
+
+function parseCsvRows(csv: string, delimiter: string): string[][] {
+    return csv
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map((line) => parseCsvLine(line, delimiter))
 }
 
 function mapAccount(row: {
@@ -1166,81 +1230,304 @@ router.get('/dashboard', (_req, res) => {
     })
 })
 
-router.get('/stats', (_req, res) => {
+router.get('/stats', (req, res) => {
+    try {
+        const db = getDb()
+        const startDate = getQueryString(req.query['startDate'])
+        const endDate = getQueryString(req.query['endDate'])
+        const accountId = getQueryNumber(req.query['accountId'], 'accountId')
+        const categoryId = getQueryNumber(req.query['categoryId'], 'categoryId')
+
+        const transactionFilters: string[] = []
+        const transactionFilterParams: Array<string | number> = []
+
+        if (startDate !== null) {
+            transactionFilters.push('t.date >= ?')
+            transactionFilterParams.push(startDate)
+        }
+        if (endDate !== null) {
+            transactionFilters.push('t.date <= ?')
+            transactionFilterParams.push(endDate)
+        }
+        if (accountId !== null) {
+            transactionFilters.push('t.account_id = ?')
+            transactionFilterParams.push(accountId)
+        }
+        if (categoryId !== null) {
+            transactionFilters.push('t.category_id = ?')
+            transactionFilterParams.push(categoryId)
+        }
+        const transactionWhereClause =
+            transactionFilters.length > 0 ? `WHERE ${transactionFilters.join(' AND ')}` : ''
+
+        const byCategory = db
+            .prepare(
+                `SELECT
+                    c.name as category,
+                    c.type as type,
+                    SUM(t.amount) as total
+                 FROM transactions t
+                  LEFT JOIN categories c ON c.id = t.category_id
+                 ${transactionWhereClause}
+                 GROUP BY c.id, c.name, c.type
+                 ORDER BY total DESC`,
+            )
+            .all(...transactionFilterParams) as Array<{
+            category: string | null
+            type: TransactionType | null
+            total: number
+        }>
+
+        const byMonth = db
+            .prepare(
+                `SELECT
+                    substr(date, 1, 7) as month,
+                    SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
+                    SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense
+                 FROM transactions t
+                 ${transactionWhereClause}
+                 GROUP BY substr(date, 1, 7)
+                 ORDER BY month ASC`,
+            )
+            .all(...transactionFilterParams) as Array<{
+            month: string
+            income: number | null
+            expense: number | null
+        }>
+
+        const budgetJoinFilters: string[] = []
+        const budgetJoinParams: Array<string | number> = []
+
+        if (accountId !== null) {
+            budgetJoinFilters.push('t.account_id = ?')
+            budgetJoinParams.push(accountId)
+        }
+        if (startDate !== null) {
+            budgetJoinFilters.push('t.date >= ?')
+            budgetJoinParams.push(startDate)
+        }
+        if (endDate !== null) {
+            budgetJoinFilters.push('t.date <= ?')
+            budgetJoinParams.push(endDate)
+        }
+        const budgetJoinFilterClause =
+            budgetJoinFilters.length > 0 ? `AND ${budgetJoinFilters.join(' AND ')}` : ''
+        const budgetWhere = categoryId !== null ? 'WHERE b.category_id = ?' : ''
+        const budgetWhereParams = categoryId !== null ? [categoryId] : []
+
+        const budgetUsage = db
+            .prepare(
+                `SELECT
+                    b.id,
+                    b.name,
+                    b.amount,
+                    b.start_date,
+                    b.end_date,
+                    COALESCE(SUM(t.amount), 0) as spent
+                 FROM budgets b
+                 LEFT JOIN transactions t
+                    ON t.category_id = b.category_id
+                   AND t.type = 'expense'
+                   AND t.date BETWEEN b.start_date AND b.end_date
+                   ${budgetJoinFilterClause}
+                 ${budgetWhere}
+                 GROUP BY b.id, b.name, b.amount, b.start_date, b.end_date
+                 ORDER BY b.id DESC`,
+            )
+            .all(...budgetJoinParams, ...budgetWhereParams) as Array<{
+            id: number
+            name: string
+            amount: number
+            start_date: string
+            end_date: string
+            spent: number
+        }>
+
+        return res.json({
+            byCategory: byCategory.map((item) => ({
+                category: item.category ?? 'Uncategorized',
+                type: item.type ?? 'expense',
+                total: item.total,
+            })),
+            byMonth: byMonth.map((item) => ({
+                month: item.month,
+                income: item.income ?? 0,
+                expense: item.expense ?? 0,
+            })),
+            budgetUsage: budgetUsage.map((item) => ({
+                id: item.id,
+                name: item.name,
+                amount: item.amount,
+                spent: item.spent,
+                remaining: item.amount - item.spent,
+                startDate: item.start_date,
+                endDate: item.end_date,
+            })),
+        })
+    } catch (error) {
+        return res.status(400).json({
+            error: error instanceof Error ? error.message : 'Unable to load statistics',
+        })
+    }
+})
+
+router.post('/import/csv', (req, res) => {
     const db = getDb()
 
-    const byCategory = db
-        .prepare(
-            `SELECT
-                c.name as category,
-                c.type as type,
-                SUM(t.amount) as total
-             FROM transactions t
-             LEFT JOIN categories c ON c.id = t.category_id
-             GROUP BY c.id, c.name, c.type
-             ORDER BY total DESC`,
-        )
-        .all() as Array<{ category: string | null; type: TransactionType | null; total: number }>
+    try {
+        if (!isRecord(req.body)) {
+            throw new Error('Invalid payload')
+        }
 
-    const byMonth = db
-        .prepare(
-            `SELECT
-                substr(date, 1, 7) as month,
-                SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
-                SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense
-             FROM transactions
-             GROUP BY substr(date, 1, 7)
-             ORDER BY month ASC`,
-        )
-        .all() as Array<{ month: string; income: number | null; expense: number | null }>
+        const csv = getString(req.body, 'csv')
+        const accountId = getNumber(req.body, 'accountId')
+        const hasHeader =
+            req.body['hasHeader'] === undefined ? true : getBoolean(req.body, 'hasHeader')
+        const delimiter = getOptionalString(req.body, 'delimiter') ?? ','
+        const mappingRaw = req.body['mapping']
+        const mapping = isRecord(mappingRaw) ? mappingRaw : {}
+        const amountColumn = getOptionalString(mapping, 'amount') ?? 'amount'
+        const dateColumn = getOptionalString(mapping, 'date') ?? 'date'
+        const descriptionColumn = getOptionalString(mapping, 'description') ?? 'description'
+        const categoryColumn = getOptionalString(mapping, 'category')
+        const typeColumn = getOptionalString(mapping, 'type')
+        const defaultTypeRaw = getOptionalString(req.body, 'defaultType')
+        const defaultType = defaultTypeRaw === null ? 'expense' : assertType(defaultTypeRaw)
 
-    const budgetUsage = db
-        .prepare(
-            `SELECT
-                b.id,
-                b.name,
-                b.amount,
-                b.start_date,
-                b.end_date,
-                COALESCE(SUM(t.amount), 0) as spent
-             FROM budgets b
-             LEFT JOIN transactions t
-                ON t.category_id = b.category_id
-               AND t.type = 'expense'
-               AND t.date BETWEEN b.start_date AND b.end_date
-             GROUP BY b.id, b.name, b.amount, b.start_date, b.end_date
-             ORDER BY b.id DESC`,
-        )
-        .all() as Array<{
-        id: number
-        name: string
-        amount: number
-        start_date: string
-        end_date: string
-        spent: number
-    }>
+        if (!Number.isInteger(accountId) || accountId <= 0) {
+            throw new Error('Invalid field: accountId')
+        }
 
-    res.json({
-        byCategory: byCategory.map((item) => ({
-            category: item.category ?? 'Uncategorized',
-            type: item.type ?? 'expense',
-            total: item.total,
-        })),
-        byMonth: byMonth.map((item) => ({
-            month: item.month,
-            income: item.income ?? 0,
-            expense: item.expense ?? 0,
-        })),
-        budgetUsage: budgetUsage.map((item) => ({
-            id: item.id,
-            name: item.name,
-            amount: item.amount,
-            spent: item.spent,
-            remaining: item.amount - item.spent,
-            startDate: item.start_date,
-            endDate: item.end_date,
-        })),
-    })
+        if (!rowExists('accounts', accountId)) {
+            return res.status(400).json({ error: 'Account does not exist' })
+        }
+
+        if (delimiter.length !== 1) {
+            throw new Error('Invalid field: delimiter')
+        }
+        if (!hasHeader) {
+            throw new Error('CSV import requires a header row')
+        }
+
+        const rows = parseCsvRows(csv, delimiter)
+        if (rows.length < 2) {
+            throw new Error('CSV content is empty')
+        }
+
+        const headerRow = rows[0]
+        if (headerRow === undefined) {
+            throw new Error('CSV content is empty')
+        }
+        const headers = headerRow.map((header) => header.trim().toLowerCase())
+        const dataRows = rows.slice(1)
+        const headerIndex = new Map(headers.map((header, index) => [header, index]))
+
+        const amountIndex = headerIndex.get(amountColumn.toLowerCase())
+        const dateIndex = headerIndex.get(dateColumn.toLowerCase())
+        const descriptionIndex = headerIndex.get(descriptionColumn.toLowerCase())
+        const categoryIndex =
+            categoryColumn === null ? undefined : headerIndex.get(categoryColumn.toLowerCase())
+        const typeIndex =
+            typeColumn === null ? undefined : headerIndex.get(typeColumn.toLowerCase())
+
+        if (
+            amountIndex === undefined ||
+            dateIndex === undefined ||
+            descriptionIndex === undefined
+        ) {
+            throw new Error('Invalid CSV mapping')
+        }
+        if (categoryColumn !== null && categoryIndex === undefined) {
+            throw new Error('Invalid CSV mapping')
+        }
+        if (typeColumn !== null && typeIndex === undefined) {
+            throw new Error('Invalid CSV mapping')
+        }
+
+        const insertTransaction = db.prepare(
+            `INSERT INTO transactions(
+                amount, date, description, type, category_id, account_id, transfer_account_id,
+                is_recurring, frequency, recurrence_anchor_date
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        const selectCategory = db.prepare(
+            'SELECT id FROM categories WHERE lower(name) = lower(?) AND type = ? LIMIT 1',
+        )
+        const insertCategory = db.prepare(
+            'INSERT INTO categories(name, type, parent_id) VALUES (?, ?, ?)',
+        )
+
+        const categoryCache = new Map<string, number>()
+        let imported = 0
+
+        db.exec('BEGIN')
+
+        for (const row of dataRows) {
+            const amountRaw = row[amountIndex]
+            const date = row[dateIndex]?.trim() ?? ''
+            const description = row[descriptionIndex]?.trim() ?? ''
+            const parsedAmount = Number((amountRaw ?? '').replace(',', '.'))
+            if (!Number.isFinite(parsedAmount) || date.length === 0 || description.length === 0) {
+                continue
+            }
+
+            const rowTypeRaw =
+                typeIndex === undefined ? null : (row[typeIndex]?.trim().toLowerCase() ?? null)
+            const rowType =
+                rowTypeRaw === null || rowTypeRaw.length === 0
+                    ? defaultType
+                    : assertType(rowTypeRaw)
+            let categoryId: number | null = null
+            const categoryName =
+                categoryIndex === undefined ? '' : (row[categoryIndex]?.trim() ?? '')
+
+            if (categoryName.length > 0) {
+                const key = `${rowType}:${categoryName.toLowerCase()}`
+                const fromCache = categoryCache.get(key)
+                if (fromCache !== undefined) {
+                    categoryId = fromCache
+                } else {
+                    const existing = selectCategory.get(categoryName, rowType) as
+                        | { id: number }
+                        | undefined
+                    if (existing) {
+                        categoryId = existing.id
+                        categoryCache.set(key, existing.id)
+                    } else {
+                        const created = insertCategory.run(categoryName, rowType, null)
+                        categoryId = Number(created.lastInsertRowid)
+                        categoryCache.set(key, categoryId)
+                    }
+                }
+            }
+
+            insertTransaction.run(
+                parsedAmount,
+                date,
+                description,
+                rowType,
+                categoryId,
+                accountId,
+                null,
+                0,
+                null,
+                null,
+            )
+            imported += 1
+        }
+
+        db.exec('COMMIT')
+        return res.status(201).json({ imported })
+    } catch (error) {
+        try {
+            db.exec('ROLLBACK')
+        } catch {
+            // do nothing
+        }
+        return res
+            .status(400)
+            .json({ error: error instanceof Error ? error.message : 'Unable to import CSV' })
+    }
 })
 
 router.get('/export/json', (_req, res) => {
